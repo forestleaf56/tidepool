@@ -1,0 +1,19 @@
+{
+  "name": "Tidepool",
+  "short_name": "Tidepool",
+  "description": "Twenty classic puzzles, fifty levels each.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0E151B",
+  "theme_color": "#0E151B",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%230E151B'/%3E%3Ccircle cx='256' cy='256' r='150' fill='none' stroke='%233FB98A' stroke-width='26'/%3E%3Ccircle cx='256' cy='256' r='74' fill='none' stroke='%23C9B899' stroke-width='20'/%3E%3Ccircle cx='256' cy='256' r='20' fill='%23E0457B'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
