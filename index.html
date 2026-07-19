@@ -123,6 +123,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .sheet .card{width:100%;max-width:560px;background:var(--stone);border-top:1px solid var(--line);
   border-radius:20px 20px 0 0;padding:24px 20px calc(24px + var(--safe-b));animation:up .24s cubic-bezier(.2,.8,.2,1)}
 @keyframes up{from{transform:translateY(30px)}}
+#r-rank.bad{color:var(--urchin)}
 .result-time{font-family:'Space Mono',monospace;font-size:46px;font-weight:700;line-height:1;margin:6px 0 2px}
 .stars{font-size:26px;letter-spacing:6px;color:var(--sand);margin:10px 0}
 .stars .dim{opacity:.2}
@@ -423,10 +424,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 
 <div id="app"></div>
 <nav id="tabs" class="hidden" role="tablist" aria-label="Sections"></nav>
-<script>
-        window.TIDEPOOL_URL = "https://yqpuvsnkmmyjthioxpiw.supabase.co";
-        window.TIDEPOOL_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxcHV2c25rbW15anRoaW94cGl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0NjYzMzksImV4cCI6MjEwMDA0MjMzOX0.2cHf0KNCxueyOjihzLX_3tf_biGC_olT-gyrvr_mBKE";
-</script>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 /* ═══════════════════════════════════════════════════════════════
@@ -536,6 +534,39 @@ async function api(action, body = {}){
   if (!res.ok) throw new Error((await res.json().catch(()=>({}))).error || 'Request failed');
   return res.json();
 }
+
+
+/* ── outbox ───────────────────────────────────────────────────
+   A finished level is real work. If the network drops or the server
+   is unreachable, the run is kept with its full solution and posted
+   later — it still gets verified, it just gets verified late. */
+const Outbox = {
+  key(){ return 'tp.outbox.' + ((State.user && State.user.id) || 'guest'); },
+  all(){ try{ return JSON.parse(localStorage.getItem(this.key())) || []; }catch(e){ return []; } },
+  save(list){ try{ localStorage.setItem(this.key(), JSON.stringify(list.slice(-80))); }catch(e){} },
+  add(payload){ const l = this.all(); l.push(payload); this.save(l); },
+  count(){ return this.all().length; },
+
+  async flush(){
+    /* treat an unknown online state as online: never refuse to try */
+    if (OFFLINE || !State.user || navigator.onLine === false) return { sent:0, held:this.count() };
+    const list = this.all();
+    if (!list.length) return { sent:0, held:0 };
+    const hold = [];
+    let sent = 0;
+    for (const item of list){
+      try{ await api('submit', item); sent++; }
+      catch(e){
+        /* a rejection is permanent — holding it forever helps nobody */
+        if (/^Rejected:/.test(e.message || '')) console.warn('[tidepool] dropped:', e.message);
+        else hold.push(item);
+      }
+    }
+    this.save(hold);
+    if (sent) toast(sent === 1 ? 'A held score posted' : sent + ' held scores posted');
+    return { sent, held: hold.length };
+  }
+};
 
 /* ═══════════════════════════════════════════════════════════════
    GAME REGISTRY — 20 titles. Modules land in phases 3–5.
@@ -4394,15 +4425,29 @@ const Host = {
 
     this.showResult({ value, stars, isPB, prev, cleared });
 
+    const payload = {
+      gameId:this.game.id, level:this.level,
+      resultType:this.game.result, value, stars,
+      elapsed:seconds, solution:this.mod.serialize(this.st),
+      challengeId:this.challengeId
+    };
+    if (OFFLINE || !State.user){
+      this.paintStatus(State.user ? '' : 'Saved on this device · sign in to post scores');
+      return;
+    }
     try{
-      const r = await api('submit', {
-        gameId:this.game.id, level:this.level,
-        resultType:this.game.result, value, stars,
-        elapsed:seconds, solution:this.mod.serialize(this.st),
-        challengeId:this.challengeId
-      });
+      const r = await api('submit', payload);
       if (r && !r.offline) this.paintRank(r);
-    }catch(e){ /* keep the local result; sync later */ }
+    }catch(e){
+      const why = String(e.message || '');
+      if (/^Rejected:/.test(why)){
+        /* the server checked the solution and would not take it */
+        this.paintStatus(why.replace(/^Rejected:\s*/, 'Not posted — '));
+      } else {
+        Outbox.add(payload);
+        this.paintStatus('Saved on this device · will post when you are back online');
+      }
+    }
   },
 
   showResult({ value, stars, isPB, prev, cleared }){
@@ -4444,13 +4489,18 @@ const Host = {
   },
 
   paintRank(r){
-    const el = document.getElementById('r-rank');
-    if (!el) return;
     const bits = [];
     if (r.rank)    bits.push(`global #${r.rank} of ${r.total}`);
     if (r.percent) bits.push(`top ${r.percent}%`);
     if (r.xp)      bits.push(`+${r.xp} xp`);
-    el.textContent = bits.join('  ·  ');
+    this.paintStatus(bits.join('  ·  '), true);
+  },
+
+  paintStatus(text, ok){
+    const el = document.getElementById('r-rank');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.toggle('bad', !ok && !!text);
   }
 };
 
@@ -5235,6 +5285,11 @@ async function screenYou(){
           </div>`;
         }).join('')}</div>
 
+        ${Outbox.count() ? `<div class="item urgent" style="margin-top:22px">
+          <div class="av">↑</div>
+          <div class="grow"><div class="nm">${Outbox.count()} score${Outbox.count()>1?'s':''} waiting to post</div>
+            <div class="sub">kept on this device until the server answers</div></div>
+          <button class="pill" id="y-sync">Retry</button></div>` : ''}
         <div class="item" style="margin-top:22px">
           <div class="av">${Audio2.on?'🔊':'🔇'}</div>
           <div class="grow"><div class="nm">Sound</div><div class="sub">Synthesized, nothing downloaded</div></div>
@@ -5243,6 +5298,13 @@ async function screenYou(){
                      : '<div class="row"><button class="btn" id="y-in">Create an account</button></div>'}
       </div>`;
     document.getElementById('y-sound').onclick = e => { e.target.textContent = Audio2.toggle() ? 'On' : 'Off'; };
+    const sync = document.getElementById('y-sync');
+    if (sync) sync.onclick = async () => {
+      sync.disabled = true; sync.textContent = 'Sending…';
+      const { sent, held } = await Outbox.flush();
+      toast(held ? `${sent} posted, ${held} still waiting` : 'All caught up');
+      screenYou();
+    };
     document.querySelectorAll('.pbar').forEach(el => el.onclick = () => go('#/levels/' + el.dataset.g));
     const out = document.getElementById('y-out');
     if (out) out.onclick = async () => { await sb.auth.signOut(); State.user = null; State.profile = null; screenAuth(); };
@@ -5326,6 +5388,16 @@ async function boot(){
         State.unread = r.unread || 0;
       }catch(e){}
       watchNotifications();
+      Outbox.flush().catch(()=>{});
+
+      /* carry guest progress into the account on first sign-in */
+      try{
+        const guest = JSON.parse(localStorage.getItem('tp.prog.guest') || '{}');
+        const mine  = Progress.load();
+        let moved = 0;
+        for (const k in guest) if (!mine[k]){ mine[k] = guest[k]; moved++; }
+        if (moved){ Progress.save(mine); }
+      }catch(e){}
     }
   }
   if (!State.user && !location.hash.startsWith('#/home') && OFFLINE === false && !State.profile){
@@ -5351,6 +5423,7 @@ window.addEventListener('unhandledrejection', e => {
   if (!navigator.onLine) toast('You are offline — scores will not post.');
 });
 window.addEventListener('offline', () => toast('Offline. You can still play; scores wait.'));
+window.addEventListener('online',  () => Outbox.flush().catch(()=>{}));
 
 boot();
 </script>
