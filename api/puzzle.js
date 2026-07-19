@@ -3753,12 +3753,21 @@ function replayCheck(id, level, sub, elapsed){
            stars: mod.stars(r.st, elapsed || 0) };
 }
 
-/** Floor on plausible solve time, so a verified board can't arrive in 2 seconds. */
+/** Floor on plausible solve time, so a verified board can't arrive instantly.
+    These are the level-50 figures. Early levels are far smaller boards and are
+    genuinely solved in seconds, so the floor scales with the curve — a flat
+    floor rejects honest fast solves on level 1. */
 const MIN_SECONDS = { sudoku: 25, nonogram: 15, binairo: 20, futoshiki: 15,
                       kakuro: 20, hashi: 12, minesweeper: 10,
                       flow: 10, maze: 8, slitherlink: 25,
                       fifteen: 8, lightsout: 5, peg: 10, sokoban: 10, rushhour: 8,
                       twenty48: 15, blockudoku: 15, simon: 10, mastermind: 8, wordscram: 4 };
+
+function minSeconds(gameId, level){
+  const base = MIN_SECONDS[gameId] || 3;
+  const t = Math.min(1, Math.max(0, (level - 1) / 49));
+  return Math.max(2, base * (0.15 + 0.85 * t));
+}
 
 /* ───────── daily challenge ─────────
    Derived from the date alone, so every player gets the same puzzle
@@ -3813,7 +3822,22 @@ const ACTIONS = {
   /* profile ------------------------------------------------------ */
   async profile(user, b) {
     const id = b.userId || user.id;
-    const { data: profile } = await admin.from('profiles').select('*').eq('id', id).single();
+    let { data: profile } = await admin.from('profiles').select('*').eq('id', id).maybeSingle();
+
+    /* Belt and braces: if the signup trigger never ran, make the row now
+       rather than leaving the player in a half-created state. */
+    if (!profile && id === user.id) {
+      const meta = user.user_metadata || {};
+      let name = (meta.username || '').trim() || 'player_' + user.id.slice(0, 6);
+      name = name.slice(0, 18);
+      for (let n = 0; n < 20; n++) {
+        const attempt = n ? name.slice(0, 15) + n : name;
+        const { data, error } = await admin.from('profiles')
+          .insert({ id: user.id, username: attempt }).select().single();
+        if (!error) { profile = data; break; }
+        if (!String(error.message || '').includes('duplicate')) break;
+      }
+    }
     const { data: scores } = await admin
       .from('scores').select('game_id, level, value, stars, result_type').eq('user_id', id);
     const { count: unread } = await admin.from('notifications')
@@ -3835,8 +3859,9 @@ const ACTIONS = {
       if (v.value != null) finalValue = v.value;   // scored games are recomputed, not trusted
       if (v.stars != null) finalStars = v.stars;
     }
-    const floor = MIN_SECONDS[gameId] || 3;
-    if (resultType === 'time' && (!(elapsed > 0) || elapsed < floor)) throw new Error('Rejected: implausible time');
+    const floor = minSeconds(gameId, level);
+    if (resultType === 'time' && (!(elapsed > 0) || elapsed < floor))
+      throw new Error('Rejected: that time is below the floor for this level (' + floor.toFixed(1) + 's)');
 
     /* keep only the personal best */
     const { data: prev } = await admin.from('scores')
@@ -3851,7 +3876,8 @@ const ACTIONS = {
     }
 
     const xp = (prev ? 2 : 10) + finalStars * 5;
-    await admin.rpc('add_xp', { p_user: user.id, p_xp: xp }).catch(() => {});
+    const { data: me } = await admin.from('profiles').select('xp').eq('id', user.id).maybeSingle();
+    await admin.from('profiles').update({ xp: ((me && me.xp) || 0) + xp }).eq('id', user.id);
 
     /* standing on this exact level */
     const { data: faster, count } = await admin.from('scores')
@@ -3866,8 +3892,8 @@ const ACTIONS = {
 
     if (challengeId) await resolveChallenge(user, challengeId, finalValue, resultType);
 
-    return { ok: true, personalBest: better, value: finalValue,
-             rank, total: total || 1, percent, xp };
+    return { ok: true, saved: true, personalBest: better, value: finalValue,
+             stars: finalStars, rank, total: total || 1, percent, xp };
   },
 
   /* leaderboards --------------------------------------------------- */
