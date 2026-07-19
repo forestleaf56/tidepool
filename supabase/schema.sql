@@ -114,7 +114,8 @@ language sql security definer as $$
   update profiles set xp = xp + p_xp where id = p_user;
 $$;
 
--- RLS: everything readable for boards, writes go through the service role only
+-- RLS: everything readable for boards, writes go through the service role only.
+-- Every policy is dropped first so this file can be run as many times as you like.
 alter table profiles      enable row level security;
 alter table scores        enable row level security;
 alter table friendships   enable row level security;
@@ -122,17 +123,34 @@ alter table challenges    enable row level security;
 alter table reactions     enable row level security;
 alter table notifications enable row level security;
 
-drop policy if exists "read profiles"  on profiles;
-drop policy if exists "own profile"    on profiles;
+drop policy if exists "read profiles"      on profiles;
+drop policy if exists "own profile"        on profiles;
 drop policy if exists "insert own profile" on profiles;
-create policy "read profiles"      on profiles for select using (true);
-create policy "own profile"        on profiles for update using (auth.uid() = id);
-create policy "insert own profile" on profiles for insert with check (auth.uid() = id);
-create policy "read scores"    on scores        for select using (true);
-create policy "own edges"      on friendships   for select using (auth.uid() in (requester_id, addressee_id));
-create policy "own challenges" on challenges    for select using (auth.uid() in (from_user, to_user));
-create policy "read reactions" on reactions     for select using (true);
-create policy "own notifs"     on notifications for select using (auth.uid() = user_id);
+drop policy if exists "read scores"        on scores;
+drop policy if exists "own edges"          on friendships;
+drop policy if exists "own challenges"     on challenges;
+drop policy if exists "read reactions"     on reactions;
+drop policy if exists "own notifs"         on notifications;
 
--- realtime: the app subscribes to its own notifications for live turn alerts
-alter publication supabase_realtime add table notifications;
+create policy "read profiles"      on profiles      for select using (true);
+create policy "own profile"        on profiles      for update using (auth.uid() = id);
+create policy "insert own profile" on profiles      for insert with check (auth.uid() = id);
+create policy "read scores"        on scores        for select using (true);
+create policy "own edges"          on friendships   for select using (auth.uid() in (requester_id, addressee_id));
+create policy "own challenges"     on challenges    for select using (auth.uid() in (from_user, to_user));
+create policy "read reactions"     on reactions     for select using (true);
+create policy "own notifs"         on notifications for select using (auth.uid() = user_id);
+
+-- realtime: the app subscribes to its own notifications for live turn alerts.
+-- Adding a table twice is an error, so only add it if it is missing.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'notifications'
+  ) then
+    alter publication supabase_realtime add table notifications;
+  end if;
+end $$;
