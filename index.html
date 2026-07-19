@@ -142,7 +142,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .field input{width:100%;height:52px;background:var(--stone);border:1px solid var(--line);
   border-radius:12px;padding:0 14px;color:var(--foam);font-size:16px}
 .field input:focus{border-color:var(--kelp);outline:none}
-.msg{font-size:13px;margin:10px 0;color:var(--urchin)}
+.msg{font-size:13px;margin:10px 0;color:var(--urchin);line-height:1.45}
 .msg.ok{color:var(--kelp)}
 .linkish{color:var(--mute);font-size:14px;text-align:center;margin-top:18px}
 .linkish b{color:var(--kelp)}
@@ -423,10 +423,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 
 <div id="app"></div>
 <nav id="tabs" class="hidden" role="tablist" aria-label="Sections"></nav>
-  <script>
-        window.TIDEPOOL_URL = "https://yqpuvsnkmmyjthioxpiw.supabase.co";
-        window.TIDEPOOL_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlxcHV2c25rbW15anRoaW94cGl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ0NjYzMzksImV4cCI6MjEwMDA0MjMzOX0.2cHf0KNCxueyOjihzLX_3tf_biGC_olT-gyrvr_mBKE";
-  </script>
+
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 /* ═══════════════════════════════════════════════════════════════
@@ -4486,6 +4483,59 @@ function sheet(html, opts = {}){
   return close;
 }
 
+
+/* ── auth diagnostics ──────────────────────────────────────────
+   Supabase returns an empty body on some failures, which used to
+   surface as a bare "{}". Translate what we get into something the
+   person can act on. */
+function authError(e){
+  const raw  = String((e && (e.message || e.error_description || e.error)) || '').trim();
+  const code = e && (e.status || e.statusCode);
+  const http = code ? ' (HTTP ' + code + ')' : '';
+  if (!raw || raw === '{}' || raw === '[object Object]')
+    return 'The server rejected that without saying why' + http +
+           '. That is almost always the database setup — re-run supabase/schema.sql ' +
+           'in the Supabase SQL editor, then try again.';
+  if (/database error/i.test(raw))
+    return 'The database refused to create the account. Re-run supabase/schema.sql ' +
+           'in the Supabase SQL editor, then try again.';
+  if (/already registered|already exists|user_repeated/i.test(raw))
+    return 'That email already has an account. Try signing in instead.';
+  if (/signups? (not allowed|disabled)/i.test(raw))
+    return 'Sign-ups are turned off in Supabase. Enable them under Authentication → Providers.';
+  if (/invalid login/i.test(raw))
+    return 'Wrong email or password.';
+  if (/failed to fetch|networkerror|load failed/i.test(raw))
+    return 'Could not reach the server. Check TIDEPOOL_URL in index.html and your connection.';
+  if (/password/i.test(raw) && /least|short/i.test(raw))
+    return 'That password is too short — Supabase wants at least six characters.';
+  return raw + http;
+}
+
+/** Ping Supabase and say plainly what is and is not working. */
+async function testConnection(report){
+  if (OFFLINE)
+    return report('No Supabase URL or key is set. Add window.TIDEPOOL_URL and window.TIDEPOOL_KEY to index.html.');
+  report('Checking…', true);
+  try{
+    const base = CFG.SUPABASE_URL.replace(/\/+$/, '');
+    const res = await fetch(base + '/auth/v1/settings', { headers:{ apikey: CFG.SUPABASE_KEY } });
+    if (res.status === 401 || res.status === 403)
+      return report('Reached the server, but the anon key is wrong (HTTP ' + res.status +
+                    '). Copy it again from Project Settings → API.');
+    if (!res.ok)
+      return report('The server answered HTTP ' + res.status + '. Check the project URL.');
+    const s = await res.json().catch(()=>({}));
+    const bits = ['Connected to Supabase.'];
+    if (s.disable_signup === true) bits.push('Sign-ups are DISABLED — turn them on under Authentication → Providers.');
+    else bits.push('Sign-ups are on.');
+    if (s.mailer_autoconfirm === false) bits.push('Email confirmation is required, so check your inbox.');
+    report(bits.join(' '), s.disable_signup !== true);
+  }catch(e){
+    report('Could not reach that URL at all. Check TIDEPOOL_URL and your connection.');
+  }
+}
+
 /* ── auth ── */
 function screenAuth(mode = 'login'){
   document.getElementById('tabs').classList.add('hidden');
@@ -4503,6 +4553,7 @@ function screenAuth(mode = 'login'){
     <div class="row"><button class="btn" id="a-go">${signup ? 'Create account' : 'Sign in'}</button></div>
     <div class="linkish" id="a-swap">${signup ? 'Already play here? <b>Sign in</b>' : 'New here? <b>Create an account</b>'}</div>
     <div class="linkish" id="a-guest" style="margin-top:26px">Or <b>play as a guest</b> — no leaderboards, no friends</div>
+    <div class="linkish" id="a-test" style="margin-top:14px;font-size:12.5px"><b>Test connection</b></div>
   </div>`;
   const msg = (t, ok) => {
     const m = document.getElementById('a-msg');
@@ -4510,6 +4561,7 @@ function screenAuth(mode = 'login'){
   };
   document.getElementById('a-swap').onclick  = () => screenAuth(signup ? 'login' : 'signup');
   document.getElementById('a-guest').onclick = () => { State.user = null; go('#/home'); };
+  document.getElementById('a-test').onclick  = () => testConnection(msg);
   document.getElementById('a-go').onclick = async () => {
     const email = document.getElementById('a-email').value.trim();
     const pass  = document.getElementById('a-pass').value;
@@ -4521,8 +4573,9 @@ function screenAuth(mode = 'login'){
     btn.disabled = true; btn.textContent = signup ? 'Creating…' : 'Signing in…';
     try{
       if (signup){
-        const { error } = await sb.auth.signUp({ email, password:pass, options:{ data:{ username:uname } } });
+        const { data, error } = await sb.auth.signUp({ email, password:pass, options:{ data:{ username:uname } } });
         if (error) throw error;
+        if (data && data.session) return await boot();     // confirmation off: sign straight in
         msg('Account created. Check your email to confirm, then sign in.', true);
         btn.disabled = false; btn.textContent = 'Create account';
       } else {
@@ -4531,7 +4584,8 @@ function screenAuth(mode = 'login'){
         await boot();
       }
     }catch(e){
-      msg(e.message || 'That did not work. Check the email and password.');
+      console.error('[tidepool auth]', e);
+      msg(authError(e));
       btn.disabled = false; btn.textContent = signup ? 'Create account' : 'Sign in';
     }
   };
