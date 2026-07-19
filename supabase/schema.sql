@@ -72,12 +72,36 @@ from scores s join profiles p on p.id = s.user_id
 group by s.user_id, s.game_id, p.username, p.avatar_emoji
 order by levels_cleared desc, total asc;
 
--- create the profile row on signup, using the username from metadata
+-- Create the profile row on signup.
+-- This runs inside the auth transaction: if it raises, the whole account
+-- creation fails and the app sees an empty error. So it defends itself —
+-- it de-duplicates usernames and never lets a failure block signup.
 create or replace function handle_new_user() returns trigger
-language plpgsql security definer as $$
+language plpgsql security definer set search_path = public as $$
+declare
+  base text;
+  candidate text;
+  n int := 0;
 begin
-  insert into profiles (id, username)
-  values (new.id, coalesce(new.raw_user_meta_data->>'username', 'player_' || left(new.id::text, 6)));
+  base := nullif(trim(coalesce(new.raw_user_meta_data->>'username', '')), '');
+  if base is null then
+    base := 'player_' || left(new.id::text, 6);
+  end if;
+  base := left(base, 18);
+  candidate := base;
+
+  while exists (select 1 from public.profiles where username = candidate) loop
+    n := n + 1;
+    candidate := left(base, 15) || n::text;
+  end loop;
+
+  insert into public.profiles (id, username)
+  values (new.id, candidate)
+  on conflict (id) do nothing;
+
+  return new;
+exception when others then
+  -- the app creates the row on first sign-in if this ever falls through
   return new;
 end $$;
 
@@ -98,8 +122,12 @@ alter table challenges    enable row level security;
 alter table reactions     enable row level security;
 alter table notifications enable row level security;
 
-create policy "read profiles"  on profiles      for select using (true);
-create policy "own profile"    on profiles      for update using (auth.uid() = id);
+drop policy if exists "read profiles"  on profiles;
+drop policy if exists "own profile"    on profiles;
+drop policy if exists "insert own profile" on profiles;
+create policy "read profiles"      on profiles for select using (true);
+create policy "own profile"        on profiles for update using (auth.uid() = id);
+create policy "insert own profile" on profiles for insert with check (auth.uid() = id);
 create policy "read scores"    on scores        for select using (true);
 create policy "own edges"      on friendships   for select using (auth.uid() in (requester_id, addressee_id));
 create policy "own challenges" on challenges    for select using (auth.uid() in (from_user, to_user));
